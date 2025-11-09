@@ -1,6 +1,9 @@
 module TypingHaskell where
 import Data.List(nub, intersect, union)
 import Data.List
+import Text.Parsec
+import qualified Text.Parsec.Token as L
+import Text.Parsec.Language (emptyDef)
 
 type Index = Int
 type Id = String
@@ -57,6 +60,11 @@ infixr 4 @@
 (@@) :: Subst -> Subst -> Subst
 s1 @@ s2 = [(u,apply s1 t) | (u,t) <- s2] ++ s1
 
+as /+/ as' = as' ++ filter compl as
+   where is = dom as'
+         compl (i:>:_) = notElem i is
+
+dom = map (\(i:>:_)-> i)
 
 freshVar :: TI SimpleType
 freshVar = TI (\e -> let v = "t"++ show e in (TVar v, e+1))
@@ -77,3 +85,66 @@ mgu (TVar u, t) = varBind u t
 unify t t' = case mgu (t,t') of
       Nothing -> error ("\nTrying to unify: " ++ (show t) ++ " and " ++ (show t') ++ "\n")
       Just s -> s
+
+---------------- Inference Algorithm ---------------
+
+data Expr = Var Id
+          | App Expr Expr
+          | Lamb Id Expr
+     deriving (Eq,Show)
+
+tiContext g i = if l /= [] then t else error ("Unndefined: " ++ i ++ "\n")
+    where l = dropWhile (\(i' :>: _) -> i /= i') g
+          (_ :>: t) = head l
+
+tiExpr g (Var i) = return (tiContext g i, [])
+tiExpr g (App e e') = do (t,s1) <- tiExpr g e
+                         (t', s2) <- tiExpr (apply s1 g) e'
+                         b <- freshVar
+                         let s3 = unify (apply s2 t) (t'-->b)
+                         return (apply s3 b, s3 @@ s2 @@ s1)
+tiExpr g (Lamb i e) = do b <- freshVar
+                         (t,s) <- tiExpr (g/+/[i:>:b]) e
+                         return (apply s (b --> t),s) 
+
+infer e = runTI (tiExpr [] e)
+
+-------- Parsing the Expression -----------
+lingDef = emptyDef
+          { L.commentLine = "--"
+           ,L.identStart = letter
+           ,L.identLetter = letter
+          }
+
+lexical = L.makeTokenParser lingDef
+
+symbol = L.symbol lexical
+parens = L.parens lexical
+identifier = L.identifier lexical
+
+parseExpr = runParser expr [] "lambda-calculus"
+
+expr :: Parsec String u Expr
+expr = chainl1 parseNonApp $ return $ App
+
+var = do {i <- identifier; return (Var i)}
+
+lamAbs = do symbol "\\"
+            i <- identifier
+            symbol "."
+            e <- expr
+            return (Lamb i e)
+
+parseNonApp = parens expr
+              <|> lamAbs
+              <|> var
+
+------------- Driver Code --------------
+
+parseLambda s = case parseExpr s of
+                Left er -> print er
+                Right e -> (print e >> print (infer e))
+
+main = do putStr "Lambda:"
+          e <- getLine
+          parseLambda e

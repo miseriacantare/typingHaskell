@@ -11,15 +11,33 @@ type Subst = [(Id, SimpleType)]
 
 data Assump = Id :>: SimpleType deriving (Eq, Show)
 
-
-data SimpleType = TVar Id 
-                | TArr SimpleType SimpleType
+data Kind = Kfun Kind Kind | Unit
             deriving Eq
+
+data SimpleType = TVar Id
+                | TCon Tycon
+                | TArr SimpleType SimpleType
+                | TGen Int
+            deriving Eq
+
+data Tycon = Tycon Id Kind
+           deriving Eq
 
 instance Show SimpleType where
     show (TVar i) = i
     show (TArr (TVar i) t) = i++ " -> " ++ show t
     show (TArr t t') = "("++ show t ++ ")" ++"->"++show t'
+
+tArrow = TCon (Tycon "(->)" (Kfun Unit (Kfun Unit Unit)))
+tList = TCon (Tycon "[]" (Kfun Unit Unit))
+tProduct = TCon (Tycon "(,)" (Kfun Unit (Kfun Unit Unit)))
+
+infixr 4 `fn`
+fn :: SimpleType -> SimpleType -> SimpleType
+a `fn` b = TArr (TArr tArrow a) b
+
+list :: SimpleType -> SimpleType
+list t = TArr tList t
 
 class Subs t where
     apply :: Subst -> t -> t
@@ -121,6 +139,7 @@ lexical = L.makeTokenParser lingDef
 symbol = L.symbol lexical
 parens = L.parens lexical
 identifier = L.identifier lexical
+comma = L.comma lexical
 
 parseExpr = runParser expr [] "lambda-calculus"
 
@@ -128,6 +147,16 @@ expr :: Parsec String u Expr
 expr = chainl1 parseNonApp $ return $ App
 
 var = do {i <- identifier; return (Var i)}
+
+lamApps = do  symbol "\\"
+              i <- identifier
+              symbol "."
+              symbol "("
+              e' <- expr
+              symbol ","
+              e <- expr
+              symbol ")"
+              return (App e' e)
 
 lamAbs = do symbol "\\"
             i <- identifier
@@ -137,6 +166,7 @@ lamAbs = do symbol "\\"
 
 parseNonApp = parens expr
               <|> lamAbs
+              <|> lamApps
               <|> var
 
 ------------- Driver Code --------------
@@ -145,6 +175,6 @@ parseLambda s = case parseExpr s of
                 Left er -> print er
                 Right e -> (print e >> print (infer e))
 
-main = do putStr "Lambda:"
+main = do putStr "Lambda: "
           e <- getLine
           parseLambda e

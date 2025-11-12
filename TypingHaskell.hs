@@ -9,6 +9,9 @@ type Index = Int
 type Id = String
 type Subst = [(Id, SimpleType)]
 
+--(+->) :: Id -> SimpleType -> Subst
+--(+->) = [(u,t)]
+
 data Assump = Id :>: SimpleType deriving (Eq, Show)
 
 data Kind = Kfun Kind Kind | Unit
@@ -21,16 +24,23 @@ data SimpleType = TVar Id
             deriving Eq
 
 data Tycon = Tycon Id Kind
-           deriving Eq
+           deriving Eq 
 
 instance Show SimpleType where
     show (TVar i) = i
     show (TArr (TVar i) t) = i++ " -> " ++ show t
     show (TArr t t') = "("++ show t ++ ")" ++"->"++show t'
 
+tUnit = TCon (Tycon "()" Unit)
+tChar = TCon (Tycon "Char" Unit)
 tArrow = TCon (Tycon "(->)" (Kfun Unit (Kfun Unit Unit)))
 tList = TCon (Tycon "[]" (Kfun Unit Unit))
 tProduct = TCon (Tycon "(,)" (Kfun Unit (Kfun Unit Unit)))
+
+pair :: SimpleType -> SimpleType -> SimpleType
+pair a b = TArr (TArr tProduct a) b
+
+t --> t' = TArr t t'
 
 infixr 4 `fn`
 fn :: SimpleType -> SimpleType -> SimpleType
@@ -48,9 +58,11 @@ instance Subs SimpleType where
                             Just t -> t
                             Nothing -> TVar u
     apply s (TArr l r) = (TArr (apply s l) (apply s r))
+    apply s t = t
 
     tv (TVar u) = [u]
     tv (TArr l r) = tv l `union` tv r
+    tv t = []
 
 instance Subs a => Subs [a] where
     apply s = map (apply s)
@@ -71,8 +83,6 @@ instance Applicative TI where
 
 instance Monad TI where
    TI m >>= f = TI (\e -> let (a, e') = m e; TI fa = f a in fa e')
-
-t --> t' = TArr t t'
 
 infixr 4 @@
 (@@) :: Subst -> Subst -> Subst

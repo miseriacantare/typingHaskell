@@ -9,45 +9,24 @@ type Index = Int
 type Id = String
 type Subst = [(Id, SimpleType)]
 
---(+->) :: Id -> SimpleType -> Subst
---(+->) = [(u,t)]
-
 data Assump = Id :>: SimpleType deriving (Eq, Show)
 
-data Kind = Kfun Kind Kind | Unit
-            deriving Eq
-
-data SimpleType = TVar Id
-                | TCon Tycon
+data SimpleType = TVar Id 
                 | TArr SimpleType SimpleType
+                | TApp SimpleType SimpleType
                 | TGen Int
+                | TCons Id
             deriving Eq
-
-data Tycon = Tycon Id Kind
-           deriving Eq 
 
 instance Show SimpleType where
     show (TVar i) = i
     show (TArr (TVar i) t) = i++ " -> " ++ show t
     show (TArr t t') = "("++ show t ++ ")" ++"->"++show t'
+    show (TGen i) = show i
+    show (TCons i) = i
 
-tUnit = TCon (Tycon "()" Unit)
-tChar = TCon (Tycon "Char" Unit)
-tArrow = TCon (Tycon "(->)" (Kfun Unit (Kfun Unit Unit)))
-tList = TCon (Tycon "[]" (Kfun Unit Unit))
-tProduct = TCon (Tycon "(,)" (Kfun Unit (Kfun Unit Unit)))
-
-pair :: SimpleType -> SimpleType -> SimpleType
-pair a b = TArr (TArr tProduct a) b
-
-t --> t' = TArr t t'
-
-infixr 4 `fn`
-fn :: SimpleType -> SimpleType -> SimpleType
-a `fn` b = TArr (TArr tArrow a) b
-
-list :: SimpleType -> SimpleType
-list t = TArr tList t
+tUnit = TCons "()"
+tTuple = TCons "(,)"
 
 class Subs t where
     apply :: Subst -> t -> t
@@ -58,7 +37,6 @@ instance Subs SimpleType where
                             Just t -> t
                             Nothing -> TVar u
     apply s (TArr l r) = (TArr (apply s l) (apply s r))
-    apply s t = t
 
     tv (TVar u) = [u]
     tv (TArr l r) = tv l `union` tv r
@@ -83,6 +61,8 @@ instance Applicative TI where
 
 instance Monad TI where
    TI m >>= f = TI (\e -> let (a, e') = m e; TI fa = f a in fa e')
+
+t --> t' = TArr t t'
 
 infixr 4 @@
 (@@) :: Subst -> Subst -> Subst
@@ -119,9 +99,18 @@ unify t t' = case mgu (t,t') of
 data Expr = Var Id
           | App Expr Expr
           | Lamb Id Expr
+          | TCon Expr Expr Expr
+          | TLet Id Expr Expr
      deriving (Eq,Show)
 
-tiContext g i = if l /= [] then t else error ("Unndefined: " ++ i ++ "\n")
+data Literal = LitInt Integer
+             | LitBool Bool
+             | LitChar Char
+     deriving (Eq, Show)
+
+iniCont = ["(,)" :>: (TArr (TGen 0) (TArr (TGen 1) (TApp (TApp (TCons "(,)") (TGen 0)) (TGen 1)))), "True" :>: (TCons "Bool"), "False" :>: (TCons "Bool")]
+
+tiContext g i = if l /= [] then t else error ("Undefined: " ++ i ++ "\n")
     where l = dropWhile (\(i' :>: _) -> i /= i') g
           (_ :>: t) = head l
 
@@ -133,15 +122,28 @@ tiExpr g (App e e') = do (t,s1) <- tiExpr g e
                          return (apply s3 b, s3 @@ s2 @@ s1)
 tiExpr g (Lamb i e) = do b <- freshVar
                          (t,s) <- tiExpr (g/+/[i:>:b]) e
-                         return (apply s (b --> t),s) 
+                         return (apply s (b --> t),s)
 
-infer e = runTI (tiExpr [] e)
+-- unify x with Bool as soon as it exists
+tiExpr g (TCon x y z) = do (t,s1) <- tiExpr g y
+                           (t',s2) <- tiExpr g z
+                           b <- freshVar
+                           let s3 = unify (apply s2 t) (t'-->b)
+                           return (apply s3 b, s3 @@ s2 @@ s1)
+tiExpr g (TLet i e e') = do (t,s1) <- tiExpr g e
+                            (t',s2) <- tiExpr (apply s1 g) e'
+                            b <- freshVar
+                            let s3 = unify (apply s2 t) (t' -->b)
+                            return (apply s3 b, s3 @@ s2 @@ s1)
+
+infer e = runTI (tiExpr iniCont e)
 
 -------- Parsing the Expression -----------
 lingDef = emptyDef
           { L.commentLine = "--"
            ,L.identStart = letter
            ,L.identLetter = letter
+           ,L.reservedNames = ["if", "then", "else","let","in"]
           }
 
 lexical = L.makeTokenParser lingDef
@@ -149,7 +151,7 @@ lexical = L.makeTokenParser lingDef
 symbol = L.symbol lexical
 parens = L.parens lexical
 identifier = L.identifier lexical
-comma = L.comma lexical
+reserved = L.reserved lexical
 
 parseExpr = runParser expr [] "lambda-calculus"
 
@@ -158,25 +160,39 @@ expr = chainl1 parseNonApp $ return $ App
 
 var = do {i <- identifier; return (Var i)}
 
-lamApps = do  symbol "\\"
-              i <- identifier
-              symbol "."
-              symbol "("
-              e' <- expr
-              symbol ","
-              e <- expr
-              symbol ")"
-              return (App e' e)
-
 lamAbs = do symbol "\\"
             i <- identifier
             symbol "."
             e <- expr
             return (Lamb i e)
 
+cond = do reserved "if"
+          e <- expr
+          reserved "then"
+          e' <- expr
+          reserved "else"
+          e'' <- expr
+          return (TCon e e' e'')
+
+tlet = do reserved "let"
+          i <- identifier
+          symbol "="
+          e <- expr
+          reserved "in"
+          e' <- expr
+          return (TLet i e e')
+
+{-- pair = do symbol "("
+          e <- expr
+          symbol ","
+          e' <- expr
+          symbol ")"
+--}
+
 parseNonApp = parens expr
-              <|> lamAbs
-              <|> lamApps
+              <|> try lamAbs
+              <|> try cond
+              <|> try tlet
               <|> var
 
 ------------- Driver Code --------------
